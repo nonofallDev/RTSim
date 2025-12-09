@@ -29,23 +29,38 @@ fprintf('3. Conversion en format Q1.30...\n');
 [weights_fixed_on, weights_fixed_off] = quantize_weights(weights_on, weights_off, ...
                                                           data_width, frac_width);
 
-%% 4. Générer les fichiers pour FPGA
-fprintf('4. Génération des fichiers pour FPGA...\n');
+%% 4. Sauvegarder les données MATLAB
+fprintf('4. Sauvegarde des données MATLAB...\n');
+save('test_data.mat', 'turn_on_data', 'turn_off_data', ...
+     'weights_on', 'weights_off', 'weights_fixed_on', 'weights_fixed_off', ...
+     'data_width', 'frac_width', 'n_hidden', 'n_input', 'n_output');
+fprintf('   Fichier sauvegardé: test_data.mat\n');
+
+%% 5. Générer les fichiers pour FPGA
+fprintf('5. Génération des fichiers pour FPGA...\n');
 generate_vhdl_files(weights_fixed_on, weights_fixed_off, turn_on_data, turn_off_data);
 
-%% 5. Générer les fichiers de test
-fprintf('5. Génération des vecteurs de test...\n');
+%% 6. Générer les fichiers de test
+fprintf('6. Génération des vecteurs de test...\n');
 generate_test_vectors(turn_on_data, turn_off_data);
 
-%% 6. Visualisation
-fprintf('6. Génération des graphiques...\n');
+%% 7. Visualisation
+fprintf('7. Génération des graphiques...\n');
 plot_test_data(turn_on_data, turn_off_data);
 
 fprintf('\n=== Génération terminée avec succès! ===\n');
+fprintf('\nFichiers générés:\n');
+fprintf('  - test_data.mat (données MATLAB)\n');
+fprintf('  - coefficients.coe (initialisation BRAM)\n');
+fprintf('  - coefficients.mem (simulation)\n');
+fprintf('  - test_vectors.txt (stimuli testbench)\n');
+fprintf('  - expected_results.txt (résultats de référence)\n');
+fprintf('  - transient_waveforms.png (graphiques)\n');
 
 %% =========================================================================
-%% FONCTION 1: Générer des transitoires fictifs réalistes
+%% FONCTIONS
 %% =========================================================================
+
 function [turn_on, turn_off] = generate_fake_transients(n_on, n_off)
     % Paramètres typiques d'un IGBT
     Vce_initial = 500;  % Volts
@@ -85,21 +100,12 @@ function [turn_on, turn_off] = generate_fake_transients(n_on, n_off)
     fprintf('  - Turn-OFF: %d points, durée %.1f ns\n', n_off, turn_off.time(end)*1e9);
 end
 
-%% =========================================================================
-%% FONCTION 2: Générer des poids et biais fictifs
-%% =========================================================================
 function [weights_on, weights_off] = generate_fake_weights(n_on, n_off, n_h, n_i, n_o)
-    % Pour chaque point de temps, générer un FFNN
-    
     fprintf('  - Génération de %d FFNNs pour turn-on...\n', n_on);
     for j = 1:n_on
-        % Poids couche cachée (5x3)
-        weights_on(j).wh = randn(n_h, n_i) * 0.5;  % Variance réduite
-        % Biais couche cachée (5x1)
+        weights_on(j).wh = randn(n_h, n_i) * 0.5;
         weights_on(j).bh = randn(n_h, 1) * 0.3;
-        % Poids couche sortie (2x5)
         weights_on(j).wo = randn(n_o, n_h) * 0.5;
-        % Biais couche sortie (2x1)
         weights_on(j).bo = randn(n_o, 1) * 0.3;
     end
     
@@ -112,9 +118,6 @@ function [weights_on, weights_off] = generate_fake_weights(n_on, n_off, n_h, n_i
     end
 end
 
-%% =========================================================================
-%% FONCTION 3: Quantifier en fixed-point
-%% =========================================================================
 function [w_on_fixed, w_off_fixed] = quantize_weights(w_on, w_off, width, frac)
     n_on = length(w_on);
     n_off = length(w_off);
@@ -130,7 +133,6 @@ function [w_on_fixed, w_off_fixed] = quantize_weights(w_on, w_off, width, frac)
         w_on_fixed(j).wo = round(w_on(j).wo * scale);
         w_on_fixed(j).bo = round(w_on(j).bo * scale);
         
-        % Saturation pour éviter l'overflow
         w_on_fixed(j).wh = max(min(w_on_fixed(j).wh, 2^(width-1)-1), -2^(width-1));
         w_on_fixed(j).bh = max(min(w_on_fixed(j).bh, 2^(width-1)-1), -2^(width-1));
         w_on_fixed(j).wo = max(min(w_on_fixed(j).wo, 2^(width-1)-1), -2^(width-1));
@@ -151,67 +153,55 @@ function [w_on_fixed, w_off_fixed] = quantize_weights(w_on, w_off, width, frac)
     end
 end
 
-%% =========================================================================
-%% FONCTION 4: Générer les fichiers VHDL
-%% =========================================================================
 function generate_vhdl_files(w_on, w_off, data_on, data_off)
     
-    %% 4.1 Fichier COE pour BRAM des coefficients
     fprintf('  - Génération du fichier COE pour BRAM...\n');
     fid = fopen('coefficients.coe', 'w');
-    fprintf(fid, 'memory_initialization_radix=10;\n');  % Décimal signé
+    fprintf(fid, 'memory_initialization_radix=10;\n');
     fprintf(fid, 'memory_initialization_vector=\n');
     
-    % Turn-on (150 FFNNs)
+    % Turn-on
     for j = 1:length(w_on)
-        % wh: 5x3 = 15 coefficients
+        % wh: 5x3 = 15
         for i = 1:size(w_on(j).wh, 1)
             for k = 1:size(w_on(j).wh, 2)
                 fprintf(fid, '%d,\n', w_on(j).wh(i,k));
             end
         end
-        % bh: 5 coefficients
+        % bh: 5
         for i = 1:length(w_on(j).bh)
             fprintf(fid, '%d,\n', w_on(j).bh(i));
         end
-        % wo: 2x5 = 10 coefficients
+        % wo: 2x5 = 10
         for i = 1:size(w_on(j).wo, 1)
             for k = 1:size(w_on(j).wo, 2)
                 fprintf(fid, '%d,\n', w_on(j).wo(i,k));
             end
         end
-        % bo: 2 coefficients
+        % bo: 2
         for i = 1:length(w_on(j).bo)
-            if j == length(w_on) && i == length(w_on(j).bo) && isempty(w_off)
-                fprintf(fid, '%d;\n', w_on(j).bo(i));  % Dernier élément
-            else
-                fprintf(fid, '%d,\n', w_on(j).bo(i));
-            end
+            fprintf(fid, '%d,\n', w_on(j).bo(i));
         end
     end
     
-    % Turn-off (500 FFNNs)
+    % Turn-off
     for j = 1:length(w_off)
-        % wh
         for i = 1:size(w_off(j).wh, 1)
             for k = 1:size(w_off(j).wh, 2)
                 fprintf(fid, '%d,\n', w_off(j).wh(i,k));
             end
         end
-        % bh
         for i = 1:length(w_off(j).bh)
             fprintf(fid, '%d,\n', w_off(j).bh(i));
         end
-        % wo
         for i = 1:size(w_off(j).wo, 1)
             for k = 1:size(w_off(j).wo, 2)
                 fprintf(fid, '%d,\n', w_off(j).wo(i,k));
             end
         end
-        % bo
         for i = 1:length(w_off(j).bo)
             if j == length(w_off) && i == length(w_off(j).bo)
-                fprintf(fid, '%d;\n', w_off(j).bo(i));  % Dernier élément
+                fprintf(fid, '%d;\n', w_off(j).bo(i));
             else
                 fprintf(fid, '%d,\n', w_off(j).bo(i));
             end
@@ -220,25 +210,20 @@ function generate_vhdl_files(w_on, w_off, data_on, data_off)
     
     fclose(fid);
     
-    %% 4.2 Fichier MEM (format hexadécimal pour simulation)
     fprintf('  - Génération du fichier MEM...\n');
     fid = fopen('coefficients.mem', 'w');
     
     % Turn-on
     for j = 1:length(w_on)
-        % wh
         for i = 1:numel(w_on(j).wh)
             fprintf(fid, '%08X\n', typecast(int32(w_on(j).wh(i)), 'uint32'));
         end
-        % bh
         for i = 1:numel(w_on(j).bh)
             fprintf(fid, '%08X\n', typecast(int32(w_on(j).bh(i)), 'uint32'));
         end
-        % wo
         for i = 1:numel(w_on(j).wo)
             fprintf(fid, '%08X\n', typecast(int32(w_on(j).wo(i)), 'uint32'));
         end
-        % bo
         for i = 1:numel(w_on(j).bo)
             fprintf(fid, '%08X\n', typecast(int32(w_on(j).bo(i)), 'uint32'));
         end
@@ -265,66 +250,58 @@ function generate_vhdl_files(w_on, w_off, data_on, data_off)
     fprintf('    Fichiers générés: coefficients.coe, coefficients.mem\n');
 end
 
-%% =========================================================================
-%% FONCTION 5: Générer les vecteurs de test
-%% =========================================================================
 function generate_test_vectors(data_on, data_off)
     
-    %% Paramètres de normalisation
     scale = 2^30;
     
-    % Normalisation Temperature [-40°C, 150°C] → [-1, 1]
-    T = 20;  % 20°C
+    T = 20;
     T_norm = 2 * (T - (-40)) / (150 - (-40)) - 1;
     T_fixed = round(T_norm * scale);
     
-    % Normalisation Vce [0V, 700V] → [-1, 1]
     Vce_init = 500;
     Vce_norm = 2 * Vce_init / 700 - 1;
     Vce_fixed = round(Vce_norm * scale);
     
-    % Normalisation Ic [0A, 160A] → [-1, 1]
     Ic_final = 80;
     Ic_norm = 2 * Ic_final / 160 - 1;
     Ic_fixed = round(Ic_norm * scale);
     
-    %% Générer fichier de stimuli pour testbench
     fid = fopen('test_vectors.txt', 'w');
     fprintf(fid, '-- Vecteurs de test pour ffnn_top_tb\n');
     fprintf(fid, '-- Format: Temps(ns) | Gate | Temp | Vce | Ic\n');
     fprintf(fid, '-- Valeurs en Q1.30 (decimal signé)\n\n');
     
     t = 0;
-    dt = 5;  % 5 ns par cycle
+    dt = 5;
     
-    % Phase IDLE
+    % IDLE
     for i = 1:20
         fprintf(fid, '%d 0 %d %d %d\n', t, T_fixed, Vce_fixed, 0);
         t = t + dt;
     end
     
-    % Phase TURN-ON
+    % TURN-ON
     fprintf(fid, '\n-- TURN-ON START\n');
     for i = 1:length(data_on.ic)
         fprintf(fid, '%d 1 %d %d %d\n', t, T_fixed, Vce_fixed, Ic_fixed);
         t = t + dt;
     end
     
-    % Phase ON
+    % ON
     fprintf(fid, '\n-- ON STATE\n');
     for i = 1:100
         fprintf(fid, '%d 1 %d %d %d\n', t, T_fixed, 0, Ic_fixed);
         t = t + dt;
     end
     
-    % Phase TURN-OFF
+    % TURN-OFF
     fprintf(fid, '\n-- TURN-OFF START\n');
     for i = 1:length(data_off.ic)
         fprintf(fid, '%d 0 %d %d %d\n', t, T_fixed, Vce_fixed, Ic_fixed);
         t = t + dt;
     end
     
-    % Phase OFF
+    % OFF
     fprintf(fid, '\n-- OFF STATE\n');
     for i = 1:100
         fprintf(fid, '%d 0 %d %d %d\n', t, T_fixed, Vce_fixed, 0);
@@ -333,41 +310,36 @@ function generate_test_vectors(data_on, data_off)
     
     fclose(fid);
     
-    %% Générer fichier de référence pour comparaison
+    % Fichier de référence
     fid = fopen('expected_results.txt', 'w');
     fprintf(fid, '-- Résultats attendus\n');
     fprintf(fid, '-- Format: Temps(ns) | Ic(A) | Vce(V)\n\n');
     
     t = 0;
     
-    % IDLE
     for i = 1:20
         fprintf(fid, '%d 0.0 %.2f\n', t, Vce_init);
         t = t + dt;
     end
     
-    % TURN-ON
     fprintf(fid, '\n-- TURN-ON\n');
     for i = 1:length(data_on.ic)
         fprintf(fid, '%d %.2f %.2f\n', t, data_on.ic(i), data_on.vce(i));
         t = t + dt;
     end
     
-    % ON
     fprintf(fid, '\n-- ON STATE\n');
     for i = 1:100
         fprintf(fid, '%d %.2f 2.0\n', t, Ic_final);
         t = t + dt;
     end
     
-    % TURN-OFF
     fprintf(fid, '\n-- TURN-OFF\n');
     for i = 1:length(data_off.ic)
         fprintf(fid, '%d %.2f %.2f\n', t, data_off.ic(i), data_off.vce(i));
         t = t + dt;
     end
     
-    % OFF
     fprintf(fid, '\n-- OFF STATE\n');
     for i = 1:100
         fprintf(fid, '%d 0.0 %.2f\n', t, Vce_init);
@@ -379,14 +351,10 @@ function generate_test_vectors(data_on, data_off)
     fprintf('    Fichiers générés: test_vectors.txt, expected_results.txt\n');
 end
 
-%% =========================================================================
-%% FONCTION 6: Visualisation
-%% =========================================================================
 function plot_test_data(data_on, data_off)
     
     figure('Position', [100 100 1200 800]);
     
-    % Turn-ON
     subplot(2,2,1);
     plot(data_on.time * 1e9, data_on.ic, 'b-', 'LineWidth', 2);
     grid on;
@@ -401,7 +369,6 @@ function plot_test_data(data_on, data_off)
     ylabel('Tension (V)');
     title('Turn-ON: Tension Vce');
     
-    % Turn-OFF
     subplot(2,2,3);
     plot(data_off.time * 1e9, data_off.ic, 'b-', 'LineWidth', 2);
     grid on;
